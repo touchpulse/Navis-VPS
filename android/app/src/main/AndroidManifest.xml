@@ -18,6 +18,13 @@
       <!-- "AR Required" app, requires "Google Play Services for AR" (ARCore)
          to be installed, as the app does not include any non-AR features. -->
       <meta-data android:name="com.google.ar.core" android:value="required" />
+      <meta-data
+          android:name="com.google.android.ar.API_KEY"
+          android:value="AIzaSyCigfQVD2an1nzCQ8nN3hfxoV9k8dhQO1w" />
+
+      <meta-data
+          android:name="com.google.android.geo.API_KEY"
+          android:value="AIzaSyCigfQVD2an1nzCQ8nN3hfxoV9k8dhQO1w" />
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"

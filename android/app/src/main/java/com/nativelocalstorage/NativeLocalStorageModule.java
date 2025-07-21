@@ -17,7 +17,7 @@ import androidx.core.content.ContextCompat;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Config;
 import com.google.ar.core.Session;
-import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
+import com.google.ar.core.exceptions.*;
 
 public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
@@ -77,6 +77,18 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
       promise.resolve(true);
     } catch (UnavailableUserDeclinedInstallationException e) {
       promise.reject("E_ARCORE_INSTALL_DECLINED", "User declined ARCore installation.", e);
+    } catch (UnavailableArcoreNotInstalledException e) {
+      promise.reject("E_ARCORE_NOT_INSTALLED", "ARCore is not installed on this device.", e);
+    } catch (UnavailableDeviceNotCompatibleException e) {
+      promise.reject("E_ARCORE_NOT_COMPATIBLE", "Device is not compatible with ARCore.", e);
+    } catch (UnavailableApkTooOldException e) {
+      promise.reject("E_ARCORE_APK_TOO_OLD", "ARCore APK is too old.", e);
+    } catch (UnavailableSdkTooOldException e) {
+      promise.reject("E_ARCORE_SDK_TOO_OLD", "ARCore SDK is too old.", e);
+    } catch (FatalException e) {
+      promise.reject("E_ARCORE_FATAL_ERROR", "Fatal error occurred while setting up ARCore.", e);
+    } catch (SecurityException e) {
+      promise.reject("E_ARCORE_SECURITY_ERROR", "Camera permission is required to use ARCore.", e);
     }
   }
 

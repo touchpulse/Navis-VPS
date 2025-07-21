@@ -19,6 +19,7 @@ function App(): React.JSX.Element {
       }
     } catch (e: any) {
       setArStatus(`AR setup failed: ${e.message}`);
+      console.error(JSON.stringify(e, null, 2));
     }
   }
 
