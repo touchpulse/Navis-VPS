@@ -1,13 +1,32 @@
 package com.nativelocalstorage;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import com.nativelocalstorage.NativeLocalStorageSpec;
 import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.Promise;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.util.Log;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import com.google.ar.core.ArCoreApk;
+import com.google.ar.core.Config;
+import com.google.ar.core.Session;
+import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
 
 public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   public static final String NAME = "NativeLocalStorage";
+  private static final String TAG = "NativeLocalStorageModule";
+  private static final int CAMERA_PERMISSION_CODE = 0;
+
+  private Session mSession;
+  private boolean mUserRequestedInstall = true;
 
   public NativeLocalStorageModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -18,30 +37,54 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     return NAME;
   }
 
-  @Override
-  public void setItem(String value, String key) {
-    SharedPreferences sharedPref = getReactApplicationContext().getSharedPreferences("my_prefs", Context.MODE_PRIVATE);
-    SharedPreferences.Editor editor = sharedPref.edit();
-    editor.putString(key, value);
-    editor.apply();
+  @ReactMethod
+  public void setupAR(Promise promise) {
+    Activity currentActivity = getCurrentActivity();
+    if (currentActivity == null) {
+      promise.reject("E_ACTIVITY_DOES_NOT_EXIST", "Activity doesn't exist");
+      return;
+    }
+
+    // Request camera permission. For a real app, the result should be handled.
+    if (ContextCompat.checkSelfPermission(currentActivity,
+        Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+      ActivityCompat.requestPermissions(currentActivity, new String[] { Manifest.permission.CAMERA },
+          CAMERA_PERMISSION_CODE);
+    }
+
+    try {
+      if (mSession == null) {
+        ArCoreApk.Availability availability = ArCoreApk.getInstance().checkAvailability(getReactApplicationContext());
+        if (!availability.isSupported()) {
+          promise.reject("E_ARCORE_NOT_SUPPORTED", "ARCore is not supported on this device.");
+          return;
+        }
+
+        // Request installation of Google Play Services for AR if needed.
+        ArCoreApk.InstallStatus installStatus = ArCoreApk.getInstance().requestInstall(currentActivity,
+            mUserRequestedInstall);
+        if (installStatus == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+          mUserRequestedInstall = false;
+          promise.resolve(false); // Indicate installation is in progress.
+          return;
+        }
+
+        // If we get here, ARCore is installed.
+        mSession = new Session(getReactApplicationContext());
+        Config config = new Config(mSession);
+        mSession.configure(config);
+      }
+      promise.resolve(true);
+    } catch (UnavailableUserDeclinedInstallationException e) {
+      promise.reject("E_ARCORE_INSTALL_DECLINED", "User declined ARCore installation.", e);
+    }
   }
 
-  @Override
-  public String getItem(String key) {
-    SharedPreferences sharedPref = getReactApplicationContext().getSharedPreferences("my_prefs", Context.MODE_PRIVATE);
-    String username = sharedPref.getString(key, null);
-    return username;
-  }
-
-  @Override
-  public void removeItem(String key) {
-    SharedPreferences sharedPref = getReactApplicationContext().getSharedPreferences("my_prefs", Context.MODE_PRIVATE);
-    sharedPref.edit().remove(key).apply();
-  }
-
-  @Override
-  public void clear() {
-    SharedPreferences sharedPref = getReactApplicationContext().getSharedPreferences("my_prefs", Context.MODE_PRIVATE);
-    sharedPref.edit().clear().apply();
+  @ReactMethod
+  public void closeAR() {
+    if (mSession != null) {
+      mSession.close();
+      mSession = null;
+    }
   }
 }
