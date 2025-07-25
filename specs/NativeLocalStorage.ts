@@ -16,6 +16,7 @@ export interface Spec extends TurboModule {
   closeAR(): Promise<boolean>;
   checkVpsAvailability(latitude: number, longitude: number): Promise<boolean>;
   getCameraGeospatialPose(): Promise<GeospatialPose>;
+  getTrackingState(): Promise<string>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeLocalStorage');

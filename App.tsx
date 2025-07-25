@@ -3,12 +3,17 @@ import {
   SafeAreaView,
   StyleSheet,
   Text,
-  Button,
   PermissionsAndroid,
   Platform,
   View,
+  TouchableOpacity,
 } from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+} from 'react-native-vision-camera';
 
 import NativeLocalStorage, {GeospatialPose} from './specs/NativeLocalStorage';
 
@@ -23,11 +28,17 @@ type ArState =
   | 'CLOSING';
 
 function App(): React.JSX.Element {
+  const {
+    hasPermission: hasCameraPermission,
+    requestPermission: requestCameraPermission,
+  } = useCameraPermission();
+  const device = useCameraDevice('back');
   const [arState, setArState] = React.useState<ArState>('NOT_SETUP');
   const [statusMessage, setStatusMessage] = React.useState('AR not setup.');
   const [vpsStatus, setVpsStatus] = React.useState<string>('VPS not checked');
   const [pose, setPose] = React.useState<GeospatialPose | null>(null);
   const [poseError, setPoseError] = React.useState<string | null>(null);
+  const [trackingState, setTrackingState] = React.useState<string | null>(null);
   const [currentLocation, setCurrentLocation] = React.useState<{
     latitude: number;
     longitude: number;
@@ -35,37 +46,75 @@ function App(): React.JSX.Element {
   const [locationError, setLocationError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const requestLocationPermission = async () => {
+    const init = async () => {
+      await setupAR();
+      await startTracking();
+    };
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  React.useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+
+    const pollTrackingState = async () => {
+      if (arState === 'TRACKING') {
+        try {
+          const state = await NativeLocalStorage?.getTrackingState();
+          setTrackingState(state || 'N/A');
+        } catch (e: any) {
+          console.error('Failed to get tracking state:', e.message);
+          setTrackingState('ERROR');
+        }
+      }
+    };
+
+    if (arState === 'TRACKING') {
+      intervalId = setInterval(pollTrackingState, 1000); // Poll every second
+    }
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [arState]);
+
+  React.useEffect(() => {
+    const requestPermissions = async () => {
+      const cameraPermission = await requestCameraPermission();
+
+      let locationPermission = true;
       if (Platform.OS === 'android') {
         try {
           const granted = await PermissionsAndroid.request(
             PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            {
-              title: 'Location Permission',
-              message:
-                'This app needs access to your location for AR features.',
-              buttonNeutral: 'Ask Me Later',
-              buttonNegative: 'Cancel',
-              buttonPositive: 'OK',
-            },
           );
-          return granted === PermissionsAndroid.RESULTS.GRANTED;
+          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            locationPermission = false;
+          }
         } catch (err) {
           console.warn(err);
+          setLocationError('Permissions request failed.');
           return false;
         }
       }
-      return true;
+
+      if (cameraPermission && locationPermission) {
+        return true;
+      } else {
+        setLocationError('Location and Camera permissions are required.');
+        return false;
+      }
     };
 
     const getLocation = async () => {
-      const hasPermission = await requestLocationPermission();
+      const hasPermission = await requestPermissions();
       if (!hasPermission) {
-        setLocationError('Location permission denied.');
         return;
       }
 
-      Geolocation.getCurrentPosition(
+      Geolocation.watchPosition(
         position => {
           setCurrentLocation({
             latitude: position.coords.latitude,
@@ -82,7 +131,7 @@ function App(): React.JSX.Element {
     };
 
     getLocation();
-  }, []);
+  }, [requestCameraPermission]);
 
   async function setupAR() {
     setArState('SETTING_UP');
@@ -134,6 +183,7 @@ function App(): React.JSX.Element {
       setArState('SETUP_COMPLETE');
       setPose(null);
       setPoseError(null);
+      setTrackingState(null);
     } catch (e: any) {
       setStatusMessage(`Failed to stop tracking: ${e.message}`);
       setArState('TRACKING'); // Revert to previous state
@@ -150,6 +200,7 @@ function App(): React.JSX.Element {
     setPose(null);
     setPoseError(null);
     setVpsStatus('VPS not checked');
+    setTrackingState(null);
   }
 
   async function checkVps() {
@@ -190,48 +241,128 @@ function App(): React.JSX.Element {
   const canCheckVps = arState === 'TRACKING' && !!currentLocation;
   const canGetPose = arState === 'TRACKING';
 
+  const isCameraActive = ![
+    'STARTING_TRACKING',
+    'TRACKING',
+    'STOPPING_TRACKING',
+    'CLOSING',
+  ].includes(arState);
+
+  if (device == null) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.overlay}>
+          <Text style={styles.errorText}>No camera device found.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.text}>{statusMessage}</Text>
-      {locationError && <Text style={styles.errorText}>{locationError}</Text>}
-      <View style={styles.buttonContainer}>
-        <Button title="Setup AR" onPress={setupAR} disabled={!canSetup} />
-        <Button
-          title="Start Tracking"
-          onPress={startTracking}
-          disabled={!canStartTracking}
+      {hasCameraPermission && (
+        <Camera
+          style={StyleSheet.absoluteFill}
+          device={device}
+          isActive={isCameraActive}
         />
-        <Button
-          title="Stop Tracking"
-          onPress={stopTracking}
-          disabled={!canStopTracking}
-        />
-        <Button title="Close AR" onPress={closeAR} disabled={!canClose} />
-      </View>
-      <Text style={styles.text}>{vpsStatus}</Text>
-      <Button
-        title="Check VPS at Current Location"
-        onPress={checkVps}
-        disabled={!canCheckVps}
-      />
-      <Button
-        title="Get Geospatial Pose"
-        onPress={getPose}
-        disabled={!canGetPose}
-      />
-      {pose && (
-        <>
-          <Text style={styles.text}>Latitude: {pose.latitude.toFixed(6)}</Text>
-          <Text style={styles.text}>
-            Longitude: {pose.longitude.toFixed(6)}
-          </Text>
-          <Text style={styles.text}>Altitude: {pose.altitude.toFixed(2)}</Text>
-          <Text style={styles.text}>
-            Yaw Accuracy: {pose.orientationYawAccuracy.toFixed(2)}
-          </Text>
-        </>
       )}
-      {poseError && <Text style={styles.errorText}>{poseError}</Text>}
+      {/* Assuming a full-screen camera view is rendered natively in the background */}
+      <View style={styles.overlay}>
+        <View style={styles.topContainer}>
+          <Text style={styles.statusText}>{statusMessage}</Text>
+          {trackingState && (
+            <Text style={styles.statusText}>
+              Tracking State: {trackingState}
+            </Text>
+          )}
+          {locationError && (
+            <Text style={styles.errorText}>{locationError}</Text>
+          )}
+        </View>
+
+        <View style={styles.bottomContainer}>
+          <View style={styles.dataContainer}>
+            {currentLocation ? (
+              <>
+                <Text style={styles.dataTitle}>Current GPS Location</Text>
+                <Text style={styles.dataText}>
+                  Latitude: {currentLocation.latitude.toFixed(6)}
+                </Text>
+                <Text style={styles.dataText}>
+                  Longitude: {currentLocation.longitude.toFixed(6)}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.errorText}>Fetching current location...</Text>
+            )}
+          </View>
+
+          <View style={styles.dataContainer}>
+            <Text style={styles.dataTitle}>{vpsStatus}</Text>
+            {pose && (
+              <>
+                <Text style={styles.dataTitle}>Geospatial Pose</Text>
+                <Text style={styles.dataText}>
+                  Latitude: {pose.latitude.toFixed(6)}
+                </Text>
+                <Text style={styles.dataText}>
+                  Longitude: {pose.longitude.toFixed(6)}
+                </Text>
+                <Text style={styles.dataText}>
+                  Altitude: {pose.altitude.toFixed(2)}
+                </Text>
+                <Text style={styles.dataText}>
+                  Yaw Accuracy: {pose.orientationYawAccuracy.toFixed(2)}
+                </Text>
+              </>
+            )}
+            {poseError && <Text style={styles.errorText}>{poseError}</Text>}
+          </View>
+
+          <View style={styles.buttonContainer}>
+            <TouchableOpacity
+              style={[styles.button, !canSetup && styles.disabledButton]}
+              onPress={setupAR}
+              disabled={!canSetup}>
+              <Text style={styles.buttonText}>Setup AR</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.button,
+                !canStartTracking && styles.disabledButton,
+              ]}
+              onPress={startTracking}
+              disabled={!canStartTracking}>
+              <Text style={styles.buttonText}>Start Tracking</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, !canCheckVps && styles.disabledButton]}
+              onPress={checkVps}
+              disabled={!canCheckVps}>
+              <Text style={styles.buttonText}>Check VPS</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, !canGetPose && styles.disabledButton]}
+              onPress={getPose}
+              disabled={!canGetPose}>
+              <Text style={styles.buttonText}>Get Pose</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, !canStopTracking && styles.disabledButton]}
+              onPress={stopTracking}
+              disabled={!canStopTracking}>
+              <Text style={styles.buttonText}>Stop Tracking</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, !canClose && styles.disabledButton]}
+              onPress={closeAR}
+              disabled={!canClose}>
+              <Text style={styles.buttonText}>Close AR</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
     </SafeAreaView>
   );
 }
@@ -239,24 +370,79 @@ function App(): React.JSX.Element {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
+    backgroundColor: 'transparent', // To see camera view behind
+  },
+  overlay: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: 20,
+    paddingTop: 40, // Extra padding for status bar area
+  },
+  topContainer: {
+    // For status messages at the top
+  },
+  bottomContainer: {
+    // For controls and data at the bottom
+  },
+  dataContainer: {
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
+  },
+  dataTitle: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  dataText: {
+    color: 'white',
+    fontSize: 14,
+    textAlign: 'center',
   },
   buttonContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-around',
-    marginVertical: 10,
+    justifyContent: 'center',
+    marginVertical: 5,
   },
-  text: {
-    margin: 10,
-    fontSize: 16,
+  button: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    margin: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  disabledButton: {
+    backgroundColor: '#555',
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  statusText: {
+    color: 'white',
     textAlign: 'center',
+    fontSize: 18,
+    fontWeight: 'bold',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 10,
   },
   errorText: {
-    margin: 10,
-    fontSize: 16,
+    marginVertical: 5,
+    fontSize: 14,
     textAlign: 'center',
-    color: 'red',
+    color: '#FF3B30',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    padding: 8,
+    borderRadius: 10,
   },
 });
 

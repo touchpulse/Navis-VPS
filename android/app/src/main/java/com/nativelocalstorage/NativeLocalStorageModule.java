@@ -53,16 +53,9 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
       return;
     }
 
-    // Request camera and location permissions. For a real app, the result should be
-    // handled.
-    if (ContextCompat.checkSelfPermission(currentActivity,
-        Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(currentActivity,
-            Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-      ActivityCompat.requestPermissions(currentActivity,
-          new String[] { Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION },
-          CAMERA_PERMISSION_CODE);
-    }
+    // Permissions should be requested from the JS side before calling this method.
+    // The SecurityException catch block below will handle cases where permissions
+    // are missing.
 
     try {
       if (mSession == null) {
@@ -140,6 +133,22 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     } else {
       promise.resolve(true); // If no session, it's already "stopped"
     }
+  }
+
+  @ReactMethod
+  public void getTrackingState(Promise promise) {
+    if (mSession == null) {
+      promise.resolve("SESSION_NOT_INITIALIZED");
+      return;
+    }
+
+    Earth earth = mSession.getEarth();
+    if (earth == null) {
+      promise.resolve("EARTH_NOT_AVAILABLE");
+      return;
+    }
+
+    promise.resolve(earth.getTrackingState().toString());
   }
 
   @ReactMethod
