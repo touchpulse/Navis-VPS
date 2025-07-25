@@ -117,6 +117,32 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
   }
 
   @ReactMethod
+  public void startTracking(Promise promise) {
+    if (mSession != null) {
+      try {
+        mSession.resume();
+        promise.resolve(true);
+      } catch (CameraNotAvailableException e) {
+        promise.reject("E_CAMERA_NOT_AVAILABLE", "Camera not available.", e);
+      } catch (Exception e) {
+        promise.reject("E_TRACKING_START_ERROR", "Failed to start tracking: " + e.getMessage(), e);
+      }
+    } else {
+      promise.reject("E_SESSION_NOT_INITIALIZED", "AR session is not initialized. Call setupAR first.");
+    }
+  }
+
+  @ReactMethod
+  public void stopTracking(Promise promise) {
+    if (mSession != null) {
+      mSession.pause();
+      promise.resolve(true);
+    } else {
+      promise.resolve(true); // If no session, it's already "stopped"
+    }
+  }
+
+  @ReactMethod
   public void getCameraGeospatialPose(Promise promise) {
     if (mSession == null) {
       promise.reject("E_SESSION_NOT_INITIALIZED", "AR session is not initialized. Call setupAR first.");

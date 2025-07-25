@@ -11,6 +11,8 @@ export interface GeospatialPose {
 
 export interface Spec extends TurboModule {
   setupAR(): Promise<boolean>;
+  startTracking(): Promise<boolean>;
+  stopTracking(): Promise<boolean>;
   closeAR(): Promise<boolean>;
   checkVpsAvailability(latitude: number, longitude: number): Promise<boolean>;
   getCameraGeospatialPose(): Promise<GeospatialPose>;
