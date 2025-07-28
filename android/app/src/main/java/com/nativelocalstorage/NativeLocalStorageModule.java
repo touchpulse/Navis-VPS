@@ -1,19 +1,17 @@
 package com.nativelocalstorage;
 
 import android.app.Activity;
+import android.util.Log;
+
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.WritableArray;
-
-import android.Manifest;
-import android.content.pm.PackageManager;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Config;
@@ -23,13 +21,29 @@ import com.google.ar.core.Session;
 import com.google.ar.core.TrackingState;
 import com.google.ar.core.exceptions.*;
 
+import java.util.EnumSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   public static final String NAME = "NativeLocalStorage";
-  private static final int CAMERA_PERMISSION_CODE = 0;
+  public static final String VPS_STATE_CHANGE_EVENT = "onVpsStateChange";
+
+  // State management
+  private enum VpsState {
+    NOT_SETUP,
+    SETTING_UP,
+    SETUP_FAILED,
+    UNSUPPORTED,
+    READY_TO_TRACK,
+    PRETRACKING,
+    TRACKING,
+    STOPPED,
+    EARTH_STATE_ERROR
+  }
+
+  private VpsState vpsState = VpsState.NOT_SETUP;
 
   private Session mSession;
   private boolean mUserRequestedInstall = true;
@@ -37,6 +51,17 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   public NativeLocalStorageModule(ReactApplicationContext reactContext) {
     super(reactContext);
+  }
+
+  private void setState(VpsState newState) {
+    if (this.vpsState == newState) {
+      return; // No change, no event.
+    }
+    this.vpsState = newState;
+
+    getReactApplicationContext()
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+        .emit(VPS_STATE_CHANGE_EVENT, newState.toString());
   }
 
   @NonNull
@@ -47,9 +72,11 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   @ReactMethod
   public void setupAR(Promise promise) {
+    setState(VpsState.SETTING_UP);
     Activity currentActivity = getCurrentActivity();
     if (currentActivity == null) {
-      promise.reject("E_ACTIVITY_DOES_NOT_EXIST", "Activity doesn't exist");
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ACTIVITY_DOES_NOT_EXIST");
       return;
     }
 
@@ -61,7 +88,8 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
       if (mSession == null) {
         ArCoreApk.Availability availability = ArCoreApk.getInstance().checkAvailability(getReactApplicationContext());
         if (!availability.isSupported()) {
-          promise.reject("E_ARCORE_NOT_SUPPORTED", "ARCore is not supported on this device.");
+          setState(VpsState.UNSUPPORTED);
+          promise.resolve("ERROR_ARCORE_NOT_SUPPORTED");
           return;
         }
 
@@ -74,13 +102,13 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
           return;
         }
 
-        mSession = new Session(getReactApplicationContext());
+        mSession = new Session(getReactApplicationContext(), EnumSet.of(Session.Feature.SHARED_CAMERA));
 
         // Check if Geospatial is supported.
         boolean supported = mSession.isGeospatialModeSupported(Config.GeospatialMode.ENABLED);
         if (!supported) {
-          promise.reject("E_GEOSPATIAL_NOT_SUPPORTED",
-              "Geospatial API is not supported on this device.");
+          setState(VpsState.UNSUPPORTED);
+          promise.resolve("ERROR_GEOSPATIAL_NOT_SUPPORTED");
           mSession.close();
           mSession = null;
           return;
@@ -90,139 +118,141 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
         config.setGeospatialMode(Config.GeospatialMode.ENABLED);
         mSession.configure(config);
       }
+      setState(VpsState.READY_TO_TRACK);
       promise.resolve(true);
     } catch (UnavailableUserDeclinedInstallationException e) {
-      promise.reject("E_ARCORE_INSTALL_DECLINED", "User declined ARCore installation.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_INSTALL_DECLINED");
     } catch (UnavailableArcoreNotInstalledException e) {
-      promise.reject("E_ARCORE_NOT_INSTALLED", "ARCore is not installed on this device.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_NOT_INSTALLED");
     } catch (UnavailableDeviceNotCompatibleException e) {
-      promise.reject("E_ARCORE_NOT_COMPATIBLE", "Device is not compatible with ARCore.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_NOT_COMPATIBLE");
     } catch (UnavailableApkTooOldException e) {
-      promise.reject("E_ARCORE_APK_TOO_OLD", "ARCore APK is too old.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_APK_TOO_OLD");
     } catch (UnavailableSdkTooOldException e) {
-      promise.reject("E_ARCORE_SDK_TOO_OLD", "ARCore SDK is too old.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_SDK_TOO_OLD");
     } catch (FatalException e) {
-      promise.reject("E_ARCORE_FATAL_ERROR", "Fatal error occurred while setting up ARCore.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_FATAL_ERROR");
     } catch (SecurityException e) {
-      promise.reject("E_ARCORE_SECURITY_ERROR",
-          "Camera and/or location permission is required to use ARCore with Geospatial.", e);
+      setState(VpsState.SETUP_FAILED);
+      promise.resolve("ERROR_ARCORE_SECURITY_ERROR");
     }
   }
 
   @ReactMethod
   public void startTracking(Promise promise) {
-    if (mSession != null) {
-      try {
-        mSession.resume();
-        promise.resolve(true);
-      } catch (CameraNotAvailableException e) {
-        promise.reject("E_CAMERA_NOT_AVAILABLE", "Camera not available.", e);
-      } catch (Exception e) {
-        promise.reject("E_TRACKING_START_ERROR", "Failed to start tracking: " + e.getMessage(), e);
-      }
-    } else {
-      promise.reject("E_SESSION_NOT_INITIALIZED", "AR session is not initialized. Call setupAR first.");
-    }
-  }
-
-  @ReactMethod
-  public void stopTracking(Promise promise) {
-    if (mSession != null) {
-      mSession.pause();
-      promise.resolve(true);
-    } else {
-      promise.resolve(true); // If no session, it's already "stopped"
-    }
-  }
-
-  @ReactMethod
-  public void getTrackingState(Promise promise) {
     if (mSession == null) {
-      promise.resolve("SESSION_NOT_INITIALIZED");
+      promise.resolve("ERROR_SESSION_NOT_INITIALIZED");
       return;
     }
 
-    Earth earth = mSession.getEarth();
-    if (earth == null) {
-      promise.resolve("EARTH_NOT_AVAILABLE");
+    if (vpsState != VpsState.READY_TO_TRACK) {
+      promise.resolve("ERROR_SESSION_NOT_READY");
       return;
     }
 
-    promise.resolve(earth.getTrackingState().toString());
+    try {
+      mSession.resume();
+      setState(VpsState.PRETRACKING);
+
+      promise.resolve(true);
+    } catch (SessionNotPausedException e) {
+      promise.resolve("ERROR_SESSION_NOT_PAUSED");
+    } catch (CameraNotAvailableException e) {
+      promise.resolve("ERROR_CAMERA_NOT_AVAILABLE");
+    } catch (SecurityException e) {
+      promise.resolve("ERROR_CAMERA_PERMISSION_NOT_GRANTED");
+    } catch (IllegalStateException e) {
+      promise.resolve("ERROR_ILLEGAL_STATE");
+    } catch (UnsupportedConfigurationException e) {
+      promise.resolve("ERROR_UNSUPPORTED_CONFIGURATION");
+    } catch (FatalException e) {
+      promise.resolve("ERROR_FATAL");
+    }
+  }
+
+  @ReactMethod
+  public boolean stopTracking() {
+    if (mSession == null) {
+      return false;
+    }
+
+    mSession.pause();
+    setState(VpsState.STOPPED);
+    return true;
+  }
+
+  @ReactMethod
+  public String getVpsState() {
+    return vpsState.toString();
+  }
+
+  @ReactMethod
+  @Override
+  public void addListener(String eventName) {
+    // Keep: Required for RN built in Event Emitter Calls.
+  }
+
+  @ReactMethod
+  @Override
+  public void removeListeners(double count) {
+    // Keep: Required for RN built in Event Emitter Calls.
   }
 
   @ReactMethod
   public void getCameraGeospatialPose(Promise promise) {
     if (mSession == null) {
-      promise.reject("E_SESSION_NOT_INITIALIZED", "AR session is not initialized. Call setupAR first.");
+      promise.resolve("ERROR_SESSION_NOT_INITIALIZED");
       return;
     }
 
     Earth earth = mSession.getEarth();
     if (earth == null) {
-      promise.reject("E_EARTH_NOT_AVAILABLE", "Earth object not available. Is Geospatial mode enabled?");
+      promise.resolve("ERROR_EARTH_NOT_AVAILABLE");
       return;
     }
 
-    if (earth.getTrackingState() == TrackingState.TRACKING) {
-      GeospatialPose cameraGeospatialPose = earth.getCameraGeospatialPose();
-      WritableMap poseMap = Arguments.createMap();
-      poseMap.putDouble("latitude", cameraGeospatialPose.getLatitude());
-      poseMap.putDouble("longitude", cameraGeospatialPose.getLongitude());
-      poseMap.putDouble("altitude", cameraGeospatialPose.getAltitude());
-
-      float[] quaternion = cameraGeospatialPose.getEastUpSouthQuaternion();
-      WritableArray quaternionArray = Arguments.createArray();
-      for (float v : quaternion) {
-        quaternionArray.pushDouble(v);
-      }
-      poseMap.putArray("quaternion", quaternionArray);
-
-      poseMap.putDouble("orientationYawAccuracy", cameraGeospatialPose.getOrientationYawAccuracy());
-
-      promise.resolve(poseMap);
-    } else {
-      TrackingState trackingState = earth.getTrackingState();
-      Earth.EarthState earthState = earth.getEarthState();
-      promise.reject("E_NOT_TRACKING",
-          "Not tracking. Tracking state: " + trackingState + ". Earth state: " + earthState);
+    if (earth.getTrackingState() != TrackingState.TRACKING) {
+      promise.resolve("ERROR_EARTH_NOT_TRACKING");
+      return;
     }
+
+    GeospatialPose cameraGeospatialPose = earth.getCameraGeospatialPose();
+    WritableMap poseMap = Arguments.createMap();
+    poseMap.putDouble("latitude", cameraGeospatialPose.getLatitude());
+    poseMap.putDouble("longitude", cameraGeospatialPose.getLongitude());
+    poseMap.putDouble("altitude", cameraGeospatialPose.getAltitude());
+    poseMap.putDouble("verticalAccuracy", cameraGeospatialPose.getVerticalAccuracy());
+    poseMap.putDouble("horizontalAccuracy", cameraGeospatialPose.getHorizontalAccuracy());
+    poseMap.putDouble("orientationYawAccuracy", cameraGeospatialPose.getOrientationYawAccuracy());
+
+    float[] quaternion = cameraGeospatialPose.getEastUpSouthQuaternion();
+    WritableArray quaternionArray = Arguments.createArray();
+    for (float v : quaternion) {
+      quaternionArray.pushDouble(v);
+    }
+    poseMap.putArray("quaternion", quaternionArray);
+
+    promise.resolve(poseMap);
   }
 
   @ReactMethod
   public void checkVpsAvailability(double latitude, double longitude, Promise promise) {
     if (mSession == null) {
-      promise.reject("E_SESSION_NOT_INITIALIZED", "AR session is not initialized. Call setupAR first.");
+      promise.resolve("ERROR_SESSION_NOT_INITIALIZED");
       return;
     }
 
-    mSession.checkVpsAvailabilityAsync(latitude, longitude, (result) -> {
-      switch (result) {
-        case AVAILABLE:
-          promise.resolve(true);
-          break;
-        case UNAVAILABLE:
-          promise.resolve(false);
-          break;
-        case ERROR_INTERNAL:
-          promise.reject("E_VPS_INTERNAL_ERROR", "An internal error occurred while determining VPS availability.");
-          break;
-        case ERROR_NETWORK_CONNECTION:
-          promise.reject("E_VPS_NETWORK_ERROR",
-              "The external service could not be reached due to a network connection error.");
-          break;
-        case ERROR_NOT_AUTHORIZED:
-          promise.reject("E_VPS_NOT_AUTHORIZED",
-              "An authorization error occurred. Check ARCore API key and configuration.");
-          break;
-        case ERROR_RESOURCE_EXHAUSTED:
-          promise.reject("E_VPS_RESOURCE_EXHAUSTED", "Too many requests were sent for VPS availability check.");
-          break;
-        case UNKNOWN:
-          promise.reject("E_VPS_UNKNOWN", "VPS availability is unknown as the request has not completed.");
-          break;
-      }
-    });
+    try {
+      mSession.checkVpsAvailabilityAsync(latitude, longitude, promise::resolve);
+    } catch (SecurityException e) {
+      promise.resolve("ERROR_INTERNET_PERMISSION_NOT_GRANTED");
+    }
   }
 
   @ReactMethod
@@ -231,27 +261,32 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
       try {
         mSession.pause();
         // Run session close on a separate thread
+        // TODO: Handle closing the camera device when adding shared camera
         executorService.execute(() -> {
           try {
             if (mSession != null) { // Double check as it could be removed by another call
               mSession.close();
               mSession = null;
             }
+            setState(VpsState.NOT_SETUP);
             promise.resolve(true);
           } catch (Exception e) {
             // It's possible mSession became null between the outer check and here
             // or another error occurred during close.
             if (mSession != null) {
-              promise.reject("E_ARCORE_CLOSE_ERROR", "Error closing AR session: " + e.getMessage(), e);
+              promise.resolve("ERROR_ARCORE_CLOSE_ERROR");
+            } else {
+              setState(VpsState.NOT_SETUP);
+              promise.resolve(true);
             }
-            promise.resolve(true);
           }
         });
       } catch (Exception e) {
         // Catch exceptions from mSession.pause()
-        promise.reject("E_ARCORE_PAUSE_ERROR", "Error pausing AR session: " + e.getMessage(), e);
+        promise.resolve("ERROR_ARCORE_PAUSE_ERROR");
       }
     } else {
+      setState(VpsState.NOT_SETUP);
       promise.resolve(true);
     }
   }
@@ -277,7 +312,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
         localExecutor.shutdown(); // Shutdown this temporary executor
       } catch (Exception e) {
         // Log error, but don't crash the app during cleanup
-        System.err.println("Error during AR session cleanup on catalyst destroy: " + e.getMessage());
+        Log.e("CLEANUP_ERROR", "Error during AR session cleanup on catalyst destroy: " + e.getMessage());
       }
     }
   }

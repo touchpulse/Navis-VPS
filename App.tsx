@@ -1,448 +1,375 @@
-import React from 'react';
+import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {
-  SafeAreaView,
   StyleSheet,
   Text,
-  PermissionsAndroid,
-  Platform,
   View,
   TouchableOpacity,
+  PermissionsAndroid,
+  Platform,
+  Linking,
 } from 'react-native';
-import Geolocation from '@react-native-community/geolocation';
 import {
   Camera,
   useCameraDevice,
   useCameraPermission,
 } from 'react-native-vision-camera';
+import Geolocation from '@react-native-community/geolocation';
+import NativeLocalStorage, {
+  addVpsStateListener,
+  VpsState,
+  GeospatialPose,
+  VpsAvailability,
+  SetupARErrors,
+  CloseARErrors,
+  GeospatialTrackingStartErrors,
+  VpsAvailaibilityErrors,
+  GeospatialPoseErrors,
+} from './specs/NativeLocalStorage';
 
-import NativeLocalStorage, {GeospatialPose} from './specs/NativeLocalStorage';
+// Helper to check if a value is an error enum
+function isError<T extends object>(
+  value: any,
+  errorEnum: T,
+): value is T[keyof T] {
+  return Object.values(errorEnum).includes(value);
+}
 
-type ArState =
-  | 'NOT_SETUP'
-  | 'SETTING_UP'
-  | 'SETUP_FAILED'
-  | 'SETUP_COMPLETE'
-  | 'STARTING_TRACKING'
-  | 'TRACKING'
-  | 'STOPPING_TRACKING'
-  | 'CLOSING';
-
-function App(): React.JSX.Element {
+const App = () => {
+  // Permissions
   const {
     hasPermission: hasCameraPermission,
     requestPermission: requestCameraPermission,
   } = useCameraPermission();
-  const device = useCameraDevice('back');
-  const [arState, setArState] = React.useState<ArState>('NOT_SETUP');
-  const [statusMessage, setStatusMessage] = React.useState('AR not setup.');
-  const [vpsStatus, setVpsStatus] = React.useState<string>('VPS not checked');
-  const [pose, setPose] = React.useState<GeospatialPose | null>(null);
-  const [poseError, setPoseError] = React.useState<string | null>(null);
-  const [trackingState, setTrackingState] = React.useState<string | null>(null);
-  const [currentLocation, setCurrentLocation] = React.useState<{
+  const [hasLocationPermission, setHasLocationPermission] = useState(false);
+
+  // State
+  const [vpsState, setVpsState] = useState<VpsState>(VpsState.NOT_SETUP);
+  const [vpsPose, setVpsPose] = useState<GeospatialPose | null>(null);
+  const [lastPoseUpdate, setLastPoseUpdate] = useState<number | null>(null);
+  const [userLocation, setUserLocation] = useState<{
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [locationError, setLocationError] = React.useState<string | null>(null);
+  const [lastLocationUpdate, setLastLocationUpdate] = useState<number | null>(
+    null,
+  );
+  const [vpsAvailability, setVpsAvailability] =
+    useState<VpsAvailability | null>(null);
+  const AVAILABILITY_CHECK_INTERVAL = 5000; // 5 seconds
+  const [lastAvailabilityCheck, setLastAvailabilityCheck] = useState<
+    number | null
+  >(null);
+  const [isPoseAccurate, setIsPoseAccurate] = useState(true);
 
-  React.useEffect(() => {
-    const init = async () => {
-      await setupAR();
-      await startTracking();
-    };
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const device = useCameraDevice('back');
+  const locationWatchId = useRef<number | null>(null);
 
-  React.useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
+  // --- Effects ---
 
-    const pollTrackingState = async () => {
-      if (arState === 'TRACKING') {
-        try {
-          const state = await NativeLocalStorage?.getTrackingState();
-          setTrackingState(state || 'N/A');
-        } catch (e: any) {
-          console.error('Failed to get tracking state:', e.message);
-          setTrackingState('ERROR');
+  // Request permissions
+  useEffect(() => {
+    const requestPermissions = async () => {
+      if (!hasCameraPermission) {
+        await requestCameraPermission();
+      }
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          {
+            title: 'Location Permission',
+            message: 'This app needs access to your location for VPS.',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          },
+        );
+        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+          setHasLocationPermission(true);
         }
+      } else {
+        // On iOS, Geolocation requests permission automatically.
+        setHasLocationPermission(true);
       }
     };
+    requestPermissions();
+  }, [hasCameraPermission, requestCameraPermission]);
 
-    if (arState === 'TRACKING') {
-      intervalId = setInterval(pollTrackingState, 1000); // Poll every second
+  // VPS State Listener
+  useEffect(() => {
+    setVpsState(NativeLocalStorage.getVpsState());
+
+    const subscription = addVpsStateListener(setVpsState);
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  // Location Watcher
+  useEffect(() => {
+    if (hasLocationPermission) {
+      locationWatchId.current = Geolocation.watchPosition(
+        position => {
+          setUserLocation(position.coords);
+          setLastLocationUpdate(Date.now());
+        },
+        error => console.error('Location Error:', error),
+        {enableHighAccuracy: true, distanceFilter: 1},
+      );
     }
+    return () => {
+      if (locationWatchId.current !== null) {
+        Geolocation.clearWatch(locationWatchId.current);
+      }
+    };
+  }, [hasLocationPermission]);
 
+  // VPS Availability Check
+  useEffect(() => {
+    const checkAvailability = async () => {
+      if (
+        vpsState === VpsState.READY_TO_TRACK &&
+        userLocation &&
+        (!lastAvailabilityCheck ||
+          Date.now() - lastAvailabilityCheck >= AVAILABILITY_CHECK_INTERVAL)
+      ) {
+        setLastAvailabilityCheck(Date.now());
+        const result = await NativeLocalStorage.checkVpsAvailability(
+          userLocation.latitude,
+          userLocation.longitude,
+        );
+        if (isError(result, VpsAvailaibilityErrors)) {
+          throw new Error(`VPS Availability Error: ${result}`);
+        }
+        setVpsAvailability(result);
+      }
+    };
+    checkAvailability();
+  }, [lastAvailabilityCheck, userLocation, vpsState]);
+
+  // Pose Polling
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+    if (vpsState === VpsState.TRACKING) {
+      intervalId = setInterval(async () => {
+        const result = await NativeLocalStorage.getCameraGeospatialPose();
+        if (isError(result, GeospatialPoseErrors)) {
+          console.warn(`Could not get pose: ${result}`);
+          setVpsPose(null);
+        } else {
+          setVpsPose(result);
+          setLastPoseUpdate(Date.now());
+          setIsPoseAccurate(result.horizontalAccuracy < 5);
+        }
+      }, 1000);
+    }
     return () => {
       if (intervalId) {
         clearInterval(intervalId);
+        setVpsPose(null);
       }
     };
-  }, [arState]);
+  }, [vpsState]);
 
-  React.useEffect(() => {
-    const requestPermissions = async () => {
-      const cameraPermission = await requestCameraPermission();
+  // --- Handlers ---
 
-      let locationPermission = true;
-      if (Platform.OS === 'android') {
-        try {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-          );
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            locationPermission = false;
-          }
-        } catch (err) {
-          console.warn(err);
-          setLocationError('Permissions request failed.');
-          return false;
-        }
-      }
-
-      if (cameraPermission && locationPermission) {
-        return true;
-      } else {
-        setLocationError('Location and Camera permissions are required.');
-        return false;
-      }
-    };
-
-    const getLocation = async () => {
-      const hasPermission = await requestPermissions();
-      if (!hasPermission) {
-        return;
-      }
-
-      Geolocation.watchPosition(
-        position => {
-          setCurrentLocation({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-          setLocationError(null);
-        },
-        error => {
-          setLocationError(error.message);
-          console.log(error.code, error.message);
-        },
-        {enableHighAccuracy: true, timeout: 15000, maximumAge: 10000},
-      );
-    };
-
-    getLocation();
-  }, [requestCameraPermission]);
-
-  async function setupAR() {
-    setArState('SETTING_UP');
-    setStatusMessage('Setting up AR...');
-    try {
-      const result = await NativeLocalStorage?.setupAR();
-      if (result) {
-        setStatusMessage('AR Session created successfully.');
-        setArState('SETUP_COMPLETE');
-      } else {
-        setStatusMessage(
-          'ARCore installation requested. Please follow prompts and restart app.',
-        );
-        setArState('NOT_SETUP');
-      }
-    } catch (e: any) {
-      setStatusMessage(`AR setup failed: ${e.message}`);
-      setArState('SETUP_FAILED');
-      console.error(JSON.stringify(e, null, 2));
+  const handleStartSession = useCallback(async () => {
+    const result = await NativeLocalStorage.setupAR();
+    if (isError(result, SetupARErrors)) {
+      throw new Error(`Setup AR Error: ${result}`);
     }
-  }
+  }, []);
 
-  async function startTracking() {
-    if (arState !== 'SETUP_COMPLETE') {
-      return;
+  const handleStopSession = useCallback(async () => {
+    const result = await NativeLocalStorage.closeAR();
+    if (isError(result, CloseARErrors)) {
+      throw new Error(`Close AR Error: ${result}`);
     }
-    setArState('STARTING_TRACKING');
-    setStatusMessage('Starting AR tracking...');
-    try {
-      await NativeLocalStorage?.startTracking();
-      setStatusMessage('AR tracking started.');
-      setArState('TRACKING');
-    } catch (e: any) {
-      setStatusMessage(`Failed to start tracking: ${e.message}`);
-      setArState('SETUP_COMPLETE'); // Revert to previous state
-      console.error(JSON.stringify(e, null, 2));
+  }, []);
+
+  const handleStartTracking = useCallback(async () => {
+    const result = await NativeLocalStorage.startTracking();
+    if (isError(result, GeospatialTrackingStartErrors)) {
+      throw new Error(`Start Tracking Error: ${result}`);
     }
-  }
+  }, []);
 
-  async function stopTracking() {
-    if (arState !== 'TRACKING') {
-      return;
+  const handleStopTracking = useCallback(() => {
+    NativeLocalStorage.stopTracking();
+  }, []);
+
+  // --- Render ---
+
+  const renderTimeSince = (timestamp: number | null) => {
+    if (timestamp === null) {
+      return 'N/A';
     }
-    setArState('STOPPING_TRACKING');
-    setStatusMessage('Stopping AR tracking...');
-    try {
-      await NativeLocalStorage?.stopTracking();
-      setStatusMessage('AR tracking stopped.');
-      setArState('SETUP_COMPLETE');
-      setPose(null);
-      setPoseError(null);
-      setTrackingState(null);
-    } catch (e: any) {
-      setStatusMessage(`Failed to stop tracking: ${e.message}`);
-      setArState('TRACKING'); // Revert to previous state
-      console.error(JSON.stringify(e, null, 2));
-    }
-  }
+    return `${Math.round((Date.now() - timestamp) / 1000)}s ago`;
+  };
 
-  async function closeAR() {
-    setArState('CLOSING');
-    setStatusMessage('Closing AR Session...');
-    await NativeLocalStorage?.closeAR();
-    setStatusMessage('AR Session closed.');
-    setArState('NOT_SETUP');
-    setPose(null);
-    setPoseError(null);
-    setVpsStatus('VPS not checked');
-    setTrackingState(null);
-  }
+  const isVpsSessionActive = [
+    VpsState.SETTING_UP,
+    VpsState.PRETRACKING,
+    VpsState.TRACKING,
+    VpsState.READY_TO_TRACK,
+  ].includes(vpsState);
 
-  async function checkVps() {
-    if (!currentLocation) {
-      setVpsStatus('Could not get current location to check VPS.');
-      return;
-    }
-    try {
-      setVpsStatus('Checking VPS availability...');
-      const {latitude, longitude} = currentLocation;
-      const result = await NativeLocalStorage?.checkVpsAvailability(
-        latitude,
-        longitude,
-      );
-      setVpsStatus(`VPS Availability: ${result ? 'Available' : 'Unavailable'}`);
-    } catch (e: any) {
-      setVpsStatus(`VPS check failed: ${e.message}`);
-      console.error(JSON.stringify(e, null, 2));
-    }
-  }
-
-  async function getPose() {
-    try {
-      const newPose = await NativeLocalStorage?.getCameraGeospatialPose();
-      setPose(newPose || null);
-      setPoseError(null);
-    } catch (e: any) {
-      setPose(null);
-      setPoseError(`Pose error: ${e.message}`);
-      console.error(JSON.stringify(e, null, 2));
-    }
-  }
-
-  const canSetup = arState === 'NOT_SETUP' || arState === 'SETUP_FAILED';
-  const canStartTracking = arState === 'SETUP_COMPLETE';
-  const canStopTracking = arState === 'TRACKING';
-  const canClose = arState === 'SETUP_COMPLETE' || arState === 'TRACKING';
-  const canCheckVps = arState === 'TRACKING' && !!currentLocation;
-  const canGetPose = arState === 'TRACKING';
-
-  const isCameraActive = ![
-    'STARTING_TRACKING',
-    'TRACKING',
-    'STOPPING_TRACKING',
-    'CLOSING',
-  ].includes(arState);
-
-  if (device == null) {
+  if (!hasCameraPermission || !hasLocationPermission) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.overlay}>
-          <Text style={styles.errorText}>No camera device found.</Text>
-        </View>
-      </SafeAreaView>
+      <View style={styles.container}>
+        <Text style={styles.text}>Permissions not granted.</Text>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => Linking.openSettings()}>
+          <Text style={styles.buttonText}>Open Settings</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (!device) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.text}>No camera device found.</Text>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {hasCameraPermission && (
+    <View style={styles.container}>
+      {!isVpsSessionActive && (
         <Camera
           style={StyleSheet.absoluteFill}
           device={device}
-          isActive={isCameraActive}
+          isActive={true}
         />
       )}
-      {/* Assuming a full-screen camera view is rendered natively in the background */}
       <View style={styles.overlay}>
-        <View style={styles.topContainer}>
-          <Text style={styles.statusText}>{statusMessage}</Text>
-          {trackingState && (
-            <Text style={styles.statusText}>
-              Tracking State: {trackingState}
+        <View style={styles.statusContainer}>
+          <Text style={styles.text}>VPS State: {vpsState}</Text>
+          <Text style={styles.text}>
+            User Location:{' '}
+            {userLocation
+              ? `${userLocation.latitude.toFixed(
+                  6,
+                )}, ${userLocation.longitude.toFixed(6)}`
+              : 'N/A'}{' '}
+            ({renderTimeSince(lastLocationUpdate)})
+          </Text>
+          <Text style={styles.text}>
+            VPS Availability: {vpsAvailability ?? 'N/A'}
+          </Text>
+          <View>
+            <Text style={styles.text}>
+              VPS Pose:{' '}
+              {vpsPose
+                ? `${vpsPose.latitude.toFixed(6)}, ${vpsPose.longitude.toFixed(
+                    6,
+                  )}`
+                : 'N/A'}{' '}
+              ({renderTimeSince(lastPoseUpdate)})
             </Text>
-          )}
-          {locationError && (
-            <Text style={styles.errorText}>{locationError}</Text>
-          )}
+            {vpsPose && (
+              <>
+                <Text style={styles.text}>
+                  {'  '}- H. Accuracy: {vpsPose.horizontalAccuracy.toFixed(2)}m
+                </Text>
+                {!isPoseAccurate && (
+                  <Text style={styles.warningText}>
+                    {'  '}- WARNING: Low horizontal accuracy!
+                  </Text>
+                )}
+              </>
+            )}
+          </View>
         </View>
 
-        <View style={styles.bottomContainer}>
-          <View style={styles.dataContainer}>
-            {currentLocation ? (
-              <>
-                <Text style={styles.dataTitle}>Current GPS Location</Text>
-                <Text style={styles.dataText}>
-                  Latitude: {currentLocation.latitude.toFixed(6)}
-                </Text>
-                <Text style={styles.dataText}>
-                  Longitude: {currentLocation.longitude.toFixed(6)}
-                </Text>
-              </>
-            ) : (
-              <Text style={styles.errorText}>Fetching current location...</Text>
-            )}
-          </View>
-
-          <View style={styles.dataContainer}>
-            <Text style={styles.dataTitle}>{vpsStatus}</Text>
-            {pose && (
-              <>
-                <Text style={styles.dataTitle}>Geospatial Pose</Text>
-                <Text style={styles.dataText}>
-                  Latitude: {pose.latitude.toFixed(6)}
-                </Text>
-                <Text style={styles.dataText}>
-                  Longitude: {pose.longitude.toFixed(6)}
-                </Text>
-                <Text style={styles.dataText}>
-                  Altitude: {pose.altitude.toFixed(2)}
-                </Text>
-                <Text style={styles.dataText}>
-                  Yaw Accuracy: {pose.orientationYawAccuracy.toFixed(2)}
-                </Text>
-              </>
-            )}
-            {poseError && <Text style={styles.errorText}>{poseError}</Text>}
-          </View>
-
-          <View style={styles.buttonContainer}>
+        <View style={styles.buttonContainer}>
+          {vpsState === VpsState.NOT_SETUP && (
             <TouchableOpacity
-              style={[styles.button, !canSetup && styles.disabledButton]}
-              onPress={setupAR}
-              disabled={!canSetup}>
-              <Text style={styles.buttonText}>Setup AR</Text>
+              style={styles.button}
+              onPress={handleStartSession}>
+              <Text style={styles.buttonText}>Start Session</Text>
             </TouchableOpacity>
+          )}
+
+          {isVpsSessionActive && (
             <TouchableOpacity
-              style={[
-                styles.button,
-                !canStartTracking && styles.disabledButton,
-              ]}
-              onPress={startTracking}
-              disabled={!canStartTracking}>
+              style={[styles.button, styles.stopButton]}
+              onPress={handleStopSession}>
+              <Text style={styles.buttonText}>Stop Session</Text>
+            </TouchableOpacity>
+          )}
+
+          {vpsState === VpsState.READY_TO_TRACK && (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={handleStartTracking}>
               <Text style={styles.buttonText}>Start Tracking</Text>
             </TouchableOpacity>
+          )}
+
+          {vpsState === VpsState.TRACKING && (
             <TouchableOpacity
-              style={[styles.button, !canCheckVps && styles.disabledButton]}
-              onPress={checkVps}
-              disabled={!canCheckVps}>
-              <Text style={styles.buttonText}>Check VPS</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, !canGetPose && styles.disabledButton]}
-              onPress={getPose}
-              disabled={!canGetPose}>
-              <Text style={styles.buttonText}>Get Pose</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, !canStopTracking && styles.disabledButton]}
-              onPress={stopTracking}
-              disabled={!canStopTracking}>
+              style={[styles.button, styles.stopButton]}
+              onPress={handleStopTracking}>
               <Text style={styles.buttonText}>Stop Tracking</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, !canClose && styles.disabledButton]}
-              onPress={closeAR}
-              disabled={!canClose}>
-              <Text style={styles.buttonText}>Close AR</Text>
-            </TouchableOpacity>
-          </View>
+          )}
         </View>
       </View>
-    </SafeAreaView>
+    </View>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'transparent', // To see camera view behind
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'black',
   },
   overlay: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'space-between',
     padding: 20,
-    paddingTop: 40, // Extra padding for status bar area
   },
-  topContainer: {
-    // For status messages at the top
-  },
-  bottomContainer: {
-    // For controls and data at the bottom
-  },
-  dataContainer: {
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    borderRadius: 10,
+  statusContainer: {
+    marginTop: 40,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     padding: 10,
-    marginBottom: 10,
+    borderRadius: 5,
   },
-  dataTitle: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 5,
-  },
-  dataText: {
+  text: {
     color: 'white',
     fontSize: 14,
-    textAlign: 'center',
+    marginBottom: 4,
+  },
+  warningText: {
+    color: 'yellow',
+    fontSize: 14,
   },
   buttonContainer: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    marginVertical: 5,
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    width: '100%',
+    paddingBottom: 20,
   },
   button: {
     backgroundColor: '#007AFF',
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    margin: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    marginHorizontal: 5,
   },
-  disabledButton: {
-    backgroundColor: '#555',
+  stopButton: {
+    backgroundColor: '#FF3B30',
   },
   buttonText: {
     color: 'white',
-    fontSize: 12,
+    fontSize: 16,
     fontWeight: 'bold',
-  },
-  statusText: {
-    color: 'white',
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: 'bold',
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    padding: 10,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-  errorText: {
-    marginVertical: 5,
-    fontSize: 14,
-    textAlign: 'center',
-    color: '#FF3B30',
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    padding: 8,
-    borderRadius: 10,
   },
 });
 
