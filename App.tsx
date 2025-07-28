@@ -56,11 +56,13 @@ const App = () => {
   );
   const [vpsAvailability, setVpsAvailability] =
     useState<VpsAvailability | null>(null);
+  const [lastVpsUpdate, setLastVpsUpdate] = useState<number | null>(null);
   const AVAILABILITY_CHECK_INTERVAL = 5000; // 5 seconds
   const [lastAvailabilityCheck, setLastAvailabilityCheck] = useState<
     number | null
   >(null);
   const [isPoseAccurate, setIsPoseAccurate] = useState(true);
+  const [currentTime, setCurrentTime] = useState(Date.now());
 
   const device = useCameraDevice('back');
   const locationWatchId = useRef<number | null>(null);
@@ -95,6 +97,14 @@ const App = () => {
     requestPermissions();
   }, [hasCameraPermission, requestCameraPermission]);
 
+  // Update time for UI refresh
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 500);
+    return () => clearInterval(intervalId);
+  }, []);
+
   // VPS State Listener
   useEffect(() => {
     setVpsState(NativeLocalStorage.getVpsState());
@@ -115,7 +125,7 @@ const App = () => {
           setLastLocationUpdate(Date.now());
         },
         error => console.error('Location Error:', error),
-        {enableHighAccuracy: true, distanceFilter: 1},
+        {enableHighAccuracy: true, interval: 5000, fastestInterval: 0},
       );
     }
     return () => {
@@ -143,6 +153,7 @@ const App = () => {
           throw new Error(`VPS Availability Error: ${result}`);
         }
         setVpsAvailability(result);
+        setLastVpsUpdate(Date.now());
       }
     };
     checkAvailability();
@@ -205,7 +216,7 @@ const App = () => {
     if (timestamp === null) {
       return 'N/A';
     }
-    return `${Math.round((Date.now() - timestamp) / 1000)}s ago`;
+    return `${Math.round((currentTime - timestamp) / 1000)}s ago`;
   };
 
   const isVpsSessionActive = [
@@ -275,7 +286,8 @@ const App = () => {
             ({renderTimeSince(lastLocationUpdate)})
           </Text>
           <Text style={styles.text}>
-            VPS Availability: {vpsAvailability ?? 'N/A'}
+            VPS Availability: {vpsAvailability ?? 'N/A'} (
+            {renderTimeSince(lastVpsUpdate)})
           </Text>
           <View>
             <Text style={styles.text}>
@@ -344,6 +356,25 @@ const App = () => {
                 <Text style={styles.buttonText}>Stop Tracking</Text>
               </TouchableOpacity>
             )}
+
+            {(!userLocation ||
+              !lastLocationUpdate ||
+              lastLocationUpdate + 10000 < Date.now()) && (
+              <TouchableOpacity
+                style={styles.button}
+                onPress={() => {
+                  Geolocation.getCurrentPosition(
+                    position => {
+                      setUserLocation(position.coords);
+                      setLastLocationUpdate(Date.now());
+                    },
+                    error => console.error('Location Error:', error),
+                    {enableHighAccuracy: true, timeout: 15000},
+                  );
+                }}>
+                <Text style={styles.buttonText}>Get Location</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </View>
@@ -364,7 +395,6 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   statusContainer: {
-    marginTop: 40,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     padding: 10,
     borderRadius: 5,
@@ -394,7 +424,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     alignItems: 'center',
     width: '100%',
-    paddingBottom: 20,
   },
   button: {
     backgroundColor: '#007AFF',
