@@ -8,6 +8,7 @@ import {
   Platform,
   Linking,
 } from 'react-native';
+import MapView, {Marker} from 'react-native-maps';
 import {
   Camera,
   useCameraDevice,
@@ -237,13 +238,30 @@ const App = () => {
 
   return (
     <View style={styles.container}>
-      {!isVpsSessionActive && (
-        <Camera
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive={true}
-        />
-      )}
+      <MapView
+        style={StyleSheet.absoluteFill}
+        region={
+          userLocation
+            ? {
+                latitude: userLocation.latitude,
+                longitude: userLocation.longitude,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }
+            : undefined
+        }
+        showsUserLocation>
+        {vpsPose && (
+          <Marker
+            coordinate={{
+              latitude: vpsPose.latitude,
+              longitude: vpsPose.longitude,
+            }}
+            title="VPS Pose"
+            pinColor="blue"
+          />
+        )}
+      </MapView>
       <View style={styles.overlay}>
         <View style={styles.statusContainer}>
           <Text style={styles.text}>VPS State: {vpsState}</Text>
@@ -284,38 +302,49 @@ const App = () => {
           </View>
         </View>
 
-        <View style={styles.buttonContainer}>
-          {vpsState === VpsState.NOT_SETUP && (
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleStartSession}>
-              <Text style={styles.buttonText}>Start Session</Text>
-            </TouchableOpacity>
+        <View>
+          {!isVpsSessionActive && (
+            <View style={styles.cameraContainer}>
+              <Camera
+                style={styles.cameraPreview}
+                device={device}
+                isActive={true}
+              />
+            </View>
           )}
+          <View style={styles.buttonContainer}>
+            {vpsState === VpsState.NOT_SETUP && (
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleStartSession}>
+                <Text style={styles.buttonText}>Start Session</Text>
+              </TouchableOpacity>
+            )}
 
-          {isVpsSessionActive && (
-            <TouchableOpacity
-              style={[styles.button, styles.stopButton]}
-              onPress={handleStopSession}>
-              <Text style={styles.buttonText}>Stop Session</Text>
-            </TouchableOpacity>
-          )}
+            {isVpsSessionActive && (
+              <TouchableOpacity
+                style={[styles.button, styles.stopButton]}
+                onPress={handleStopSession}>
+                <Text style={styles.buttonText}>Stop Session</Text>
+              </TouchableOpacity>
+            )}
 
-          {vpsState === VpsState.READY_TO_TRACK && (
-            <TouchableOpacity
-              style={styles.button}
-              onPress={handleStartTracking}>
-              <Text style={styles.buttonText}>Start Tracking</Text>
-            </TouchableOpacity>
-          )}
+            {vpsState === VpsState.READY_TO_TRACK && (
+              <TouchableOpacity
+                style={styles.button}
+                onPress={handleStartTracking}>
+                <Text style={styles.buttonText}>Start Tracking</Text>
+              </TouchableOpacity>
+            )}
 
-          {vpsState === VpsState.TRACKING && (
-            <TouchableOpacity
-              style={[styles.button, styles.stopButton]}
-              onPress={handleStopTracking}>
-              <Text style={styles.buttonText}>Stop Tracking</Text>
-            </TouchableOpacity>
-          )}
+            {vpsState === VpsState.TRACKING && (
+              <TouchableOpacity
+                style={[styles.button, styles.stopButton]}
+                onPress={handleStopTracking}>
+                <Text style={styles.buttonText}>Stop Tracking</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </View>
     </View>
@@ -348,6 +377,17 @@ const styles = StyleSheet.create({
   warningText: {
     color: 'yellow',
     fontSize: 14,
+  },
+  cameraContainer: {
+    height: 200,
+    marginBottom: 15,
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'white',
+  },
+  cameraPreview: {
+    flex: 1,
   },
   buttonContainer: {
     flexDirection: 'row',
