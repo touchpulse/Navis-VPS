@@ -48,6 +48,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
   private Session mSession;
   private boolean mUserRequestedInstall = true;
   private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+  private volatile boolean isPollingVpsState = false;
 
   public NativeLocalStorageModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -159,7 +160,10 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     try {
       mSession.resume();
       setState(VpsState.PRETRACKING);
-
+      if (!isPollingVpsState) {
+        isPollingVpsState = true;
+        executorService.submit(this::pollVpsState);
+      }
       promise.resolve(true);
     } catch (SessionNotPausedException e) {
       promise.resolve("ERROR_SESSION_NOT_PAUSED");
@@ -181,7 +185,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     if (mSession == null) {
       return false;
     }
-
+    isPollingVpsState = false;
     mSession.pause();
     setState(VpsState.STOPPED);
     return true;
@@ -249,7 +253,8 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     }
 
     try {
-      mSession.checkVpsAvailabilityAsync(latitude, longitude, (availability) -> promise.resolve(availability.toString()));
+      mSession.checkVpsAvailabilityAsync(latitude, longitude,
+          (availability) -> promise.resolve(availability.toString()));
     } catch (SecurityException e) {
       promise.resolve("ERROR_INTERNET_PERMISSION_NOT_GRANTED");
     }
@@ -257,6 +262,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   @ReactMethod
   public void closeAR(Promise promise) {
+    isPollingVpsState = false;
     if (mSession != null) {
       try {
         mSession.pause();
@@ -293,6 +299,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
 
   @Override
   public void invalidate() {
+    isPollingVpsState = false;
     if (!executorService.isShutdown()) {
       executorService.shutdown();
     }
@@ -313,6 +320,54 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
       } catch (Exception e) {
         // Log error, but don't crash the app during cleanup
         Log.e("CLEANUP_ERROR", "Error during AR session cleanup on catalyst destroy: " + e.getMessage());
+      }
+    }
+  }
+
+  private void pollVpsState() {
+    while (isPollingVpsState) {
+      if (mSession != null) {
+        Earth earth = mSession.getEarth();
+        if (earth != null) {
+          updateGeospatialState(earth);
+        }
+      }
+      try {
+        // Poll at a reasonable rate, e.g., 10 times per second.
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        isPollingVpsState = false;
+      }
+    }
+  }
+
+  private void updateGeospatialState(Earth earth) {
+    Log.d(NAME, "Updating Geospatial State. Current vpsState: " + vpsState.toString());
+    Earth.EarthState earthState = earth.getEarthState();
+    Log.d(NAME, "Earth state: " + earthState.toString());
+
+    if (earthState != Earth.EarthState.ENABLED) {
+      setState(VpsState.EARTH_STATE_ERROR);
+      isPollingVpsState = false; // Stop polling on error
+      Log.d(NAME, "Earth state is not ENABLED. New vpsState: " + vpsState.toString() + ". Stopping polling.");
+      return;
+    }
+
+    TrackingState earthTrackingState = earth.getTrackingState();
+    Log.d(NAME, "Earth tracking state: " + earthTrackingState.toString());
+
+    if (earthTrackingState == TrackingState.TRACKING) {
+      // If we were pre-tracking, we are now tracking.
+      if (vpsState == VpsState.PRETRACKING) {
+        setState(VpsState.TRACKING);
+        Log.d(NAME, "Earth started tracking. New vpsState: TRACKING");
+      }
+    } else { // PAUSED or STOPPED
+      // If we were tracking, we are now back to pre-tracking.
+      if (vpsState == VpsState.TRACKING) {
+        setState(VpsState.READY_TO_TRACK);
+        Log.d(NAME, "Earth stopped tracking. New vpsState: READY_TO_TRACK");
       }
     }
   }

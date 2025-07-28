@@ -349,7 +349,10 @@ const App = () => {
               </TouchableOpacity>
             )}
 
-            {vpsState === VpsState.TRACKING && (
+            {[
+              VpsState.TRACKING,
+              VpsState.PRETRACKING,
+            ].includes(vpsState) && (
               <TouchableOpacity
                 style={[styles.button, styles.stopButton]}
                 onPress={handleStopTracking}>
