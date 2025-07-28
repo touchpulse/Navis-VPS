@@ -249,7 +249,7 @@ public class NativeLocalStorageModule extends NativeLocalStorageSpec {
     }
 
     try {
-      mSession.checkVpsAvailabilityAsync(latitude, longitude, promise::resolve);
+      mSession.checkVpsAvailabilityAsync(latitude, longitude, (availability) -> promise.resolve(availability.toString()));
     } catch (SecurityException e) {
       promise.resolve("ERROR_INTERNET_PERMISSION_NOT_GRANTED");
     }
