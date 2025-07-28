@@ -17,6 +17,7 @@ import {
 import Geolocation from '@react-native-community/geolocation';
 import NativeLocalStorage, {
   addVpsStateListener,
+  addVpsLogListener,
   VpsState,
   GeospatialPose,
   VpsAvailability,
@@ -72,10 +73,14 @@ const App = () => {
   // Request permissions
   useEffect(() => {
     const requestPermissions = async () => {
+      console.log('Requesting permissions...');
       if (!hasCameraPermission) {
-        await requestCameraPermission();
+        console.log('Requesting camera permission...');
+        const cameraStatus = await requestCameraPermission();
+        console.log('Camera permission status:', cameraStatus);
       }
       if (Platform.OS === 'android') {
+        console.log('Requesting location permission for Android...');
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
           {
@@ -87,10 +92,16 @@ const App = () => {
           },
         );
         if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('Location permission granted for Android.');
           setHasLocationPermission(true);
+        } else {
+          console.log('Location permission denied for Android.');
         }
       } else {
         // On iOS, Geolocation requests permission automatically.
+        console.log(
+          'Setting location permission to true for iOS (permission will be requested by Geolocation).',
+        );
         setHasLocationPermission(true);
       }
     };
@@ -105,13 +116,32 @@ const App = () => {
     return () => clearInterval(intervalId);
   }, []);
 
-  // VPS State Listener
+  // Native Log Listener
   useEffect(() => {
-    setVpsState(NativeLocalStorage.getVpsState());
-
-    const subscription = addVpsStateListener(setVpsState);
+    console.log('Setting up native log listener...');
+    const subscription = addVpsLogListener(message => {
+      console.log(`[Native] ${message}`);
+    });
 
     return () => {
+      console.log('Removing native log listener.');
+      subscription.remove();
+    };
+  }, []);
+
+  // VPS State Listener
+  useEffect(() => {
+    const initialVpsState = NativeLocalStorage.getVpsState();
+    console.log('Initial VPS State:', initialVpsState);
+    setVpsState(initialVpsState);
+
+    const subscription = addVpsStateListener(newVpsState => {
+      console.log('VPS State changed:', newVpsState);
+      setVpsState(newVpsState);
+    });
+
+    return () => {
+      console.log('Removing VPS state listener.');
       subscription.remove();
     };
   }, []);
@@ -119,17 +149,20 @@ const App = () => {
   // Location Watcher
   useEffect(() => {
     if (hasLocationPermission) {
+      console.log('Starting location watcher.');
       locationWatchId.current = Geolocation.watchPosition(
         position => {
+          console.log('New location received:', position.coords);
           setUserLocation(position.coords);
           setLastLocationUpdate(Date.now());
         },
-        error => console.error('Location Error:', error),
+        error => console.error('Location Watcher Error:', error),
         {enableHighAccuracy: true, interval: 5000, fastestInterval: 0},
       );
     }
     return () => {
       if (locationWatchId.current !== null) {
+        console.log('Stopping location watcher.');
         Geolocation.clearWatch(locationWatchId.current);
       }
     };
@@ -144,12 +177,15 @@ const App = () => {
         (!lastAvailabilityCheck ||
           Date.now() - lastAvailabilityCheck >= AVAILABILITY_CHECK_INTERVAL)
       ) {
+        console.log('Checking VPS availability for location:', userLocation);
         setLastAvailabilityCheck(Date.now());
         const result = await NativeLocalStorage.checkVpsAvailability(
           userLocation.latitude,
           userLocation.longitude,
         );
+        console.log('VPS availability check result:', result);
         if (isError(result, VpsAvailaibilityErrors)) {
+          console.error(`VPS Availability Error: ${result}`);
           throw new Error(`VPS Availability Error: ${result}`);
         }
         setVpsAvailability(result);
@@ -163,12 +199,15 @@ const App = () => {
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
     if (vpsState === VpsState.TRACKING) {
+      console.log('Starting pose polling.');
       intervalId = setInterval(async () => {
+        console.log('Polling for geospatial pose...');
         const result = await NativeLocalStorage.getCameraGeospatialPose();
         if (isError(result, GeospatialPoseErrors)) {
           console.warn(`Could not get pose: ${result}`);
           setVpsPose(null);
         } else {
+          console.log('New pose received:', result);
           setVpsPose(result);
           setLastPoseUpdate(Date.now());
           setIsPoseAccurate(result.horizontalAccuracy < 5);
@@ -177,6 +216,7 @@ const App = () => {
     }
     return () => {
       if (intervalId) {
+        console.log('Stopping pose polling.');
         clearInterval(intervalId);
         setVpsPose(null);
       }
@@ -186,27 +226,37 @@ const App = () => {
   // --- Handlers ---
 
   const handleStartSession = useCallback(async () => {
+    console.log('Handling Start Session...');
     const result = await NativeLocalStorage.setupAR();
+    console.log('setupAR result:', result);
     if (isError(result, SetupARErrors)) {
+      console.error(`Setup AR Error: ${result}`);
       throw new Error(`Setup AR Error: ${result}`);
     }
   }, []);
 
   const handleStopSession = useCallback(async () => {
+    console.log('Handling Stop Session...');
     const result = await NativeLocalStorage.closeAR();
+    console.log('closeAR result:', result);
     if (isError(result, CloseARErrors)) {
+      console.error(`Close AR Error: ${result}`);
       throw new Error(`Close AR Error: ${result}`);
     }
   }, []);
 
   const handleStartTracking = useCallback(async () => {
+    console.log('Handling Start Tracking...');
     const result = await NativeLocalStorage.startTracking();
+    console.log('startTracking result:', result);
     if (isError(result, GeospatialTrackingStartErrors)) {
+      console.error(`Start Tracking Error: ${result}`);
       throw new Error(`Start Tracking Error: ${result}`);
     }
   }, []);
 
   const handleStopTracking = useCallback(() => {
+    console.log('Handling Stop Tracking...');
     NativeLocalStorage.stopTracking();
   }, []);
 
@@ -219,12 +269,7 @@ const App = () => {
     return `${Math.round((currentTime - timestamp) / 1000)}s ago`;
   };
 
-  const isVpsSessionActive = [
-    VpsState.SETTING_UP,
-    VpsState.PRETRACKING,
-    VpsState.TRACKING,
-    VpsState.READY_TO_TRACK,
-  ].includes(vpsState);
+  const isVpsSessionActive = vpsState !== VpsState.NOT_SETUP;
 
   if (!hasCameraPermission || !hasLocationPermission) {
     return (
@@ -315,13 +360,22 @@ const App = () => {
         </View>
 
         <View>
-          {!isVpsSessionActive && (
+          {(vpsState === VpsState.NOT_SETUP ||
+            vpsState === VpsState.PRETRACKING) && (
             <View style={styles.cameraContainer}>
               <Camera
                 style={styles.cameraPreview}
                 device={device}
                 isActive={true}
               />
+              {vpsState === VpsState.PRETRACKING && (
+                <View style={styles.localizingOverlay}>
+                  <Text style={styles.localizingText}>Localizing...</Text>
+                  <Text style={styles.localizingTextDetail}>
+                    Point at buildings and scan your surroundings.
+                  </Text>
+                </View>
+              )}
             </View>
           )}
           <View style={styles.buttonContainer}>
@@ -349,10 +403,7 @@ const App = () => {
               </TouchableOpacity>
             )}
 
-            {[
-              VpsState.TRACKING,
-              VpsState.PRETRACKING,
-            ].includes(vpsState) && (
+            {[VpsState.TRACKING, VpsState.PRETRACKING].includes(vpsState) && (
               <TouchableOpacity
                 style={[styles.button, styles.stopButton]}
                 onPress={handleStopTracking}>
@@ -410,6 +461,25 @@ const styles = StyleSheet.create({
   warningText: {
     color: 'yellow',
     fontSize: 14,
+  },
+  localizingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  localizingText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 18,
+  },
+  localizingTextDetail: {
+    color: 'white',
+    fontSize: 14,
+    textAlign: 'center',
+    paddingHorizontal: 10,
+    marginTop: 8,
   },
   cameraContainer: {
     height: 200,

@@ -23,10 +23,12 @@ export enum VpsState {
   PRETRACKING = 'PRETRACKING',
   /** The AR session is currently tracking the device's position. */
   TRACKING = 'TRACKING',
-  /** The AR session is stopped. */
-  STOPPED = 'STOPPED',
   /** The AR session encountered an error with the Earth state. */
   EARTH_STATE_ERROR = 'EARTH_STATE_ERROR',
+  /** The camera became unavailable during an update. The session is likely lost. */
+  CAMERA_NOT_AVAILABLE = 'CAMERA_NOT_AVAILABLE',
+  /** A fatal error occurred during the update loop. The session is likely lost. */
+  FATAL_UPDATE_ERROR = 'FATAL_UPDATE_ERROR',
 }
 
 /**
@@ -222,6 +224,17 @@ export function addVpsStateListener(
   callback: (state: VpsState) => void,
 ): EmitterSubscription {
   return eventEmitter.addListener('onVpsStateChange', callback);
+}
+
+/**
+ * Registers a listener for VPS log messages from the native module.
+ * @param callback The callback to call when a log message is received.
+ * @returns An `EmitterSubscription` to unsubscribe the listener.
+ */
+export function addVpsLogListener(
+  callback: (message: string) => void,
+): EmitterSubscription {
+  return eventEmitter.addListener('onVpsLog', callback);
 }
 
 export default NativeLocalStorage;
