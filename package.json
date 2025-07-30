@@ -2,17 +2,48 @@
   "name": "react-native-visual-positioning-system",
   "version": "1.0.1",
   "description": "React Native bridge for Google's Visual Positioning System",
+  "react-native": "js/index",
+  "source": "js/index",
+  "files": [
+    "js",
+    "android",
+    "ios",
+    "react-native-visual-positioning-system.podspec",
+    "!android/build",
+    "!ios/build",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__"
+  ],
   "keywords": [
     "VPS",
     "visual",
     "positioning",
-    "system"
+    "system",
+    "react-native",
+    "ios",
+    "android"
   ],
+  "repository": "https://github.com/SjoerdvanGoor/react-native-visual-positioning-system",
   "license": "MIT",
   "author": "Sjoerd van de Goor",
-  "type": "commonjs",
-  "main": "index.js",
+  "bugs": {
+    "url": "https://github.com/SjoerdvanGoor/react-native-visual-positioning-system/issues"
+  },
+  "homepage": "https://github.com/SjoerdvanGoor/react-native-visual-positioning-system#readme",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "^0.80.2"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "codegenConfig": {
+    "name": "VisualPositioningSystemSpec",
+    "type": "modules",
+    "jsSrcsDir": "js",
+    "android": {
+      "javaPackageName": "com.visualpositioningsystem"
+    }
   }
 }
