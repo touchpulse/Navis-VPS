@@ -1,6 +1,6 @@
 {
   "name": "react-native-visual-positioning-system",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "React Native bridge for Google's Visual Positioning System",
   "react-native": "js/index",
   "source": "js/index",
