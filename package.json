@@ -1,6 +1,6 @@
 {
   "name": "react-native-visual-positioning-system",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "React Native bridge for Google's Visual Positioning System",
   "keywords": [
     "VPS",
