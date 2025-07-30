@@ -15,6 +15,9 @@ ios/build/
 # Codegen output
 generated/
 
+# Build output
+lib/
+
 # IDE files
 .idea/
 .vscode/

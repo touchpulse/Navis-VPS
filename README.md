@@ -23,7 +23,7 @@ For Android, you need to enable the New Architecture by setting
 ## Usage
 
 ```javascript
-import VisualPositioningSystem from "react-native-visual-positioning-system/js/NativeVisualPositioningSystem";
+import VisualPositioningSystem from "react-native-visual-positioning-system";
 
 // ...
 
