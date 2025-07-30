@@ -1,7 +1,7 @@
 import { TurboModule, TurboModuleRegistry } from "react-native";
 
 export interface Spec extends TurboModule {
-  printMsg(): void;
+  printMsg(message: string): void;
 }
 
 export default TurboModuleRegistry.get<Spec>(

@@ -27,5 +27,5 @@ import VisualPositioningSystem from "react-native-visual-positioning-system";
 
 // ...
 
-VisualPositioningSystem?.printMsg();
+VisualPositioningSystem?.printMsg("Hello from my app!");
 ```

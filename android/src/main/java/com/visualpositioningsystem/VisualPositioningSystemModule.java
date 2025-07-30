@@ -20,7 +20,7 @@ public class VisualPositioningSystemModule extends NativeVisualPositioningSystem
   }
 
   @Override
-  public void printMsg() {
-    Log.d(NAME, "This is a message from the demo package");
+  public void printMsg(String message) {
+    Log.d(NAME, message);
   }
 }

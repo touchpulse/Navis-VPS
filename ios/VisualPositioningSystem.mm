@@ -4,8 +4,8 @@
 
 RCT_EXPORT_MODULE()
 
-- (void)printMsg {
-    NSLog(@"This is a message from the demo package");
+- (void)printMsg:(NSString *)message {
+    NSLog(@"%@", message);
 }
 
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
